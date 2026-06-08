@@ -1,0 +1,42 @@
+trigger:
+- main
+
+variables:
+  AWS_REGION: ap-southeast-2
+  AWS_ACCOUNT_ID: "089781651335"
+  ECR_REPO: amazon-ecs-demo-node
+  IMAGE_TAG: $(Build.SourceVersion)
+  APP_DIR: sample-nodejs-app
+
+pool:
+  vmImage: ubuntu-latest
+
+steps:
+- checkout: self
+
+- script: |
+    set -euo pipefail
+
+    ECR_REGISTRY="$(AWS_ACCOUNT_ID).dkr.ecr.$(AWS_REGION).amazonaws.com"
+    ECR_IMAGE="$ECR_REGISTRY/$(ECR_REPO):$(IMAGE_TAG)"
+
+    aws ecr get-login-password --region "$(AWS_REGION)" \
+      | docker login --username AWS --password-stdin "$ECR_REGISTRY"
+
+    docker build -t "$(ECR_REPO):$(IMAGE_TAG)" "$(APP_DIR)"
+    docker tag "$(ECR_REPO):$(IMAGE_TAG)" "$ECR_IMAGE"
+    docker push "$ECR_IMAGE"
+  displayName: Build and push image to ECR
+  env:
+    AWS_ACCESS_KEY_ID: $(AWS_ACCESS_KEY_ID)
+    AWS_SECRET_ACCESS_KEY: $(AWS_SECRET_ACCESS_KEY)
+    AWS_DEFAULT_REGION: $(AWS_REGION)
+
+- task: SSH@0
+  displayName: Deploy on EC2
+  inputs:
+    sshEndpoint: ec2-demo-ssh
+    runOptions: inline
+    inline: |
+      set -euo pipefail
+      /home/ubuntu/deploy.sh $(IMAGE_TAG)
