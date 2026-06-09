@@ -2,7 +2,7 @@ trigger:
 - main
 
 variables:
-  AWS_REGION: us-east-1
+  AWS_REGION: ap-southeast-2
   AWS_ACCOUNT_ID: "089781651335"
   ECR_REPO: amazon-ecs-demo-node
   IMAGE_TAG: $(Build.SourceVersion)
