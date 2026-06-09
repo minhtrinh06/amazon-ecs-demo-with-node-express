@@ -4,9 +4,12 @@ trigger:
 variables:
   AWS_REGION: ap-southeast-2
   AWS_ACCOUNT_ID: "089781651335"
-  ECR_REPO: amazon-ecs-demo-node
+  ECR_REPO: sample-nodejs-app
   IMAGE_TAG: $(Build.SourceVersion)
   APP_DIR: sample-nodejs-app
+  ECS_CLUSTER: sample-nodejs-app-cluster
+  ECS_SERVICE: sample-nodejs-app-service
+  ECS_CONTAINER_NAME: sample-nodejs-app
 
 pool:
   vmImage: ubuntu-latest
@@ -20,6 +23,12 @@ steps:
     ECR_REGISTRY="$(AWS_ACCOUNT_ID).dkr.ecr.$(AWS_REGION).amazonaws.com"
     ECR_IMAGE="$ECR_REGISTRY/$(ECR_REPO):$(IMAGE_TAG)"
 
+    aws ecr describe-repositories --repository-names "$(ECR_REPO)" --region "$(AWS_REGION)" >/dev/null 2>&1 \
+      || aws ecr create-repository \
+        --repository-name "$(ECR_REPO)" \
+        --image-scanning-configuration scanOnPush=true \
+        --region "$(AWS_REGION)" >/dev/null
+
     aws ecr get-login-password --region "$(AWS_REGION)" \
       | docker login --username AWS --password-stdin "$ECR_REGISTRY"
 
@@ -30,13 +39,86 @@ steps:
   env:
     AWS_ACCESS_KEY_ID: $(AWS_ACCESS_KEY_ID)
     AWS_SECRET_ACCESS_KEY: $(AWS_SECRET_ACCESS_KEY)
+    AWS_SESSION_TOKEN: $(AWS_SESSION_TOKEN)
     AWS_DEFAULT_REGION: $(AWS_REGION)
 
-- task: SSH@0
-  displayName: Deploy on EC2
-  inputs:
-    sshEndpoint: ec2-demo-ssh
-    runOptions: inline
-    inline: |
-      set -euo pipefail
-      /home/ubuntu/deploy.sh $(IMAGE_TAG)
+- script: |
+    set -euo pipefail
+
+    CURRENT_TASK_DEF_ARN="$(aws ecs describe-services \
+      --cluster "$(ECS_CLUSTER)" \
+      --services "$(ECS_SERVICE)" \
+      --query 'services[0].taskDefinition' \
+      --output text)"
+
+    if [ -z "$CURRENT_TASK_DEF_ARN" ] || [ "$CURRENT_TASK_DEF_ARN" = "None" ]; then
+      echo "Could not resolve a task definition from ECS service $(ECS_SERVICE) in cluster $(ECS_CLUSTER)." >&2
+      exit 1
+    fi
+
+    ECR_REGISTRY="$(AWS_ACCOUNT_ID).dkr.ecr.$(AWS_REGION).amazonaws.com"
+    ECR_IMAGE="$ECR_REGISTRY/$(ECR_REPO):$(IMAGE_TAG)"
+
+    aws ecs describe-task-definition \
+      --task-definition "$CURRENT_TASK_DEF_ARN" \
+      --query 'taskDefinition' \
+      > task-definition.json
+
+    ECR_IMAGE="$ECR_IMAGE" ECS_CONTAINER_NAME="$(ECS_CONTAINER_NAME)" python3 - <<'PY'
+import json
+import os
+
+with open("task-definition.json", "r", encoding="utf-8") as f:
+    task_def = json.load(f)
+
+for key in (
+    "taskDefinitionArn",
+    "revision",
+    "status",
+    "requiresAttributes",
+    "compatibilities",
+    "registeredAt",
+    "registeredBy",
+    "deregisteredAt",
+):
+    task_def.pop(key, None)
+
+image = os.environ["ECR_IMAGE"]
+container_name = os.environ["ECS_CONTAINER_NAME"]
+
+found = False
+for container in task_def.get("containerDefinitions", []):
+    if container.get("name") == container_name:
+        container["image"] = image
+        found = True
+        break
+
+if not found:
+    raise SystemExit(
+        f"Container '{container_name}' was not found in the current ECS task definition."
+    )
+
+with open("task-definition-updated.json", "w", encoding="utf-8") as f:
+    json.dump(task_def, f)
+PY
+
+    NEW_TASK_DEF_ARN="$(aws ecs register-task-definition \
+      --cli-input-json file://task-definition-updated.json \
+      --query 'taskDefinition.taskDefinitionArn' \
+      --output text)"
+
+    aws ecs update-service \
+      --cluster "$(ECS_CLUSTER)" \
+      --service "$(ECS_SERVICE)" \
+      --task-definition "$NEW_TASK_DEF_ARN" \
+      >/dev/null
+
+    aws ecs wait services-stable \
+      --cluster "$(ECS_CLUSTER)" \
+      --services "$(ECS_SERVICE)"
+  displayName: Deploy to Amazon ECS
+  env:
+    AWS_ACCESS_KEY_ID: $(AWS_ACCESS_KEY_ID)
+    AWS_SECRET_ACCESS_KEY: $(AWS_SECRET_ACCESS_KEY)
+    AWS_SESSION_TOKEN: $(AWS_SESSION_TOKEN)
+    AWS_DEFAULT_REGION: $(AWS_REGION)
