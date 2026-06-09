@@ -1,178 +1,188 @@
 trigger:
   branches:
     include:
-    - "*"
+      - "*"
 
 pr: none
 
 variables:
-  AWS_REGION: "ap-southeast-2"
-  AWS_ACCOUNT_ID: "089781651335"
-  ECR_REPO: "amazon-ecs-demo-node"
-  ECS_CLUSTER: "lovable-eagle-25xy2r"
-  ECS_SERVICE: "amazon-ecs-demo-node"
-  ECS_CONTAINER_NAME: "amazon-ecs-demo-node"
-  APP_DIR: "amazon-ecs-demo-node"
-  IMAGE_TAG: "$(Build.SourceVersion)"
+  - name: AWS_REGION
+    value: ap-southeast-2
+  - name: AWS_ACCOUNT_ID
+    value: "089781651335"
+  - name: ECR_REPO
+    value: amazon-ecs-demo-node
+  - name: ECS_CLUSTER
+    value: lovable-eagle-25xy2r
+  - name: ECS_SERVICE
+    value: amazon-ecs-demo-node
+  - name: ECS_CONTAINER_NAME
+    value: amazon-ecs-demo-node
+  - name: APP_DIR
+    value: sample-nodejs-app
+  - name: IMAGE_TAG
+    value: $(Build.SourceVersion)
 
-pool:
-  vmImage: "ubuntu-latest"
+jobs:
+  - job: deploy_to_ecs
+    displayName: Build And Deploy To ECS
+    pool:
+      vmImage: ubuntu-latest
+    steps:
+      - checkout: self
 
-steps:
-- checkout: self
+      - bash: |
+          set -euo pipefail
 
-- script: |
-    set -euo pipefail
+          required_vars=(
+            AWS_REGION
+            AWS_ACCOUNT_ID
+            ECR_REPO
+            ECS_CLUSTER
+            ECS_SERVICE
+            ECS_CONTAINER_NAME
+            APP_DIR
+            AWS_ACCESS_KEY_ID
+            AWS_SECRET_ACCESS_KEY
+          )
 
-    required_vars=(
-      AWS_REGION
-      AWS_ACCOUNT_ID
-      ECR_REPO
-      ECS_CLUSTER
-      ECS_SERVICE
-      ECS_CONTAINER_NAME
-      APP_DIR
-      AWS_ACCESS_KEY_ID
-      AWS_SECRET_ACCESS_KEY
-    )
+          for var_name in "${required_vars[@]}"; do
+            if [ -z "${!var_name:-}" ]; then
+              echo "Required variable '$var_name' is not set." >&2
+              exit 1
+            fi
+          done
 
-    for var_name in "${required_vars[@]}"; do
-      if [ -z "${!var_name:-}" ]; then
-        echo "Required variable '$var_name' is not set." >&2
-        exit 1
-      fi
-    done
+          if [ ! -d "$APP_DIR" ]; then
+            echo "Application directory '$APP_DIR' does not exist." >&2
+            exit 1
+          fi
+        displayName: Validate pipeline configuration
+        env:
+          AWS_REGION: $(AWS_REGION)
+          AWS_ACCOUNT_ID: $(AWS_ACCOUNT_ID)
+          ECR_REPO: $(ECR_REPO)
+          ECS_CLUSTER: $(ECS_CLUSTER)
+          ECS_SERVICE: $(ECS_SERVICE)
+          ECS_CONTAINER_NAME: $(ECS_CONTAINER_NAME)
+          APP_DIR: $(APP_DIR)
+          AWS_ACCESS_KEY_ID: $(AWS_ACCESS_KEY_ID)
+          AWS_SECRET_ACCESS_KEY: $(AWS_SECRET_ACCESS_KEY)
+          AWS_SESSION_TOKEN: $(AWS_SESSION_TOKEN)
 
-    if [ ! -d "$APP_DIR" ]; then
-      echo "Application directory '$APP_DIR' does not exist." >&2
-      exit 1
-    fi
-  displayName: Validate pipeline configuration
-  env:
-    AWS_REGION: $(AWS_REGION)
-    AWS_ACCOUNT_ID: $(AWS_ACCOUNT_ID)
-    ECR_REPO: $(ECR_REPO)
-    ECS_CLUSTER: $(ECS_CLUSTER)
-    ECS_SERVICE: $(ECS_SERVICE)
-    ECS_CONTAINER_NAME: $(ECS_CONTAINER_NAME)
-    APP_DIR: $(APP_DIR)
-    AWS_ACCESS_KEY_ID: $(AWS_ACCESS_KEY_ID)
-    AWS_SECRET_ACCESS_KEY: $(AWS_SECRET_ACCESS_KEY)
-    AWS_SESSION_TOKEN: $(AWS_SESSION_TOKEN)
+      - bash: |
+          set -euo pipefail
 
-- script: |
-    set -euo pipefail
+          ECR_REGISTRY="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+          ECR_IMAGE="${ECR_REGISTRY}/${ECR_REPO}:${IMAGE_TAG}"
 
-    ECR_REGISTRY="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
-    ECR_IMAGE="${ECR_REGISTRY}/${ECR_REPO}:${IMAGE_TAG}"
+          aws ecr describe-repositories --repository-names "$ECR_REPO" --region "$AWS_REGION" >/dev/null 2>&1 \
+            || aws ecr create-repository \
+              --repository-name "$ECR_REPO" \
+              --image-scanning-configuration scanOnPush=true \
+              --region "$AWS_REGION" >/dev/null
 
-    aws ecr describe-repositories --repository-names "$ECR_REPO" --region "$AWS_REGION" >/dev/null 2>&1 \
-      || aws ecr create-repository \
-        --repository-name "$ECR_REPO" \
-        --image-scanning-configuration scanOnPush=true \
-        --region "$AWS_REGION" >/dev/null
+          aws ecr get-login-password --region "$AWS_REGION" \
+            | docker login --username AWS --password-stdin "$ECR_REGISTRY"
 
-    aws ecr get-login-password --region "$AWS_REGION" \
-      | docker login --username AWS --password-stdin "$ECR_REGISTRY"
+          docker build -t "${ECR_REPO}:${IMAGE_TAG}" "$APP_DIR"
+          docker tag "${ECR_REPO}:${IMAGE_TAG}" "$ECR_IMAGE"
+          docker tag "${ECR_REPO}:${IMAGE_TAG}" "${ECR_REGISTRY}/${ECR_REPO}:latest"
+          docker push "$ECR_IMAGE"
+          docker push "${ECR_REGISTRY}/${ECR_REPO}:latest"
+        displayName: Build and push image to ECR
+        env:
+          AWS_REGION: $(AWS_REGION)
+          AWS_ACCOUNT_ID: $(AWS_ACCOUNT_ID)
+          ECR_REPO: $(ECR_REPO)
+          APP_DIR: $(APP_DIR)
+          IMAGE_TAG: $(IMAGE_TAG)
+          AWS_ACCESS_KEY_ID: $(AWS_ACCESS_KEY_ID)
+          AWS_SECRET_ACCESS_KEY: $(AWS_SECRET_ACCESS_KEY)
+          AWS_SESSION_TOKEN: $(AWS_SESSION_TOKEN)
+          AWS_DEFAULT_REGION: $(AWS_REGION)
 
-    docker build -t "${ECR_REPO}:${IMAGE_TAG}" "$APP_DIR"
-    docker tag "${ECR_REPO}:${IMAGE_TAG}" "$ECR_IMAGE"
-    docker tag "${ECR_REPO}:${IMAGE_TAG}" "${ECR_REGISTRY}/${ECR_REPO}:latest"
-    docker push "$ECR_IMAGE"
-    docker push "${ECR_REGISTRY}/${ECR_REPO}:latest"
-  displayName: Build and push image to ECR
-  env:
-    AWS_REGION: $(AWS_REGION)
-    AWS_ACCOUNT_ID: $(AWS_ACCOUNT_ID)
-    ECR_REPO: $(ECR_REPO)
-    APP_DIR: $(APP_DIR)
-    IMAGE_TAG: $(IMAGE_TAG)
-    AWS_ACCESS_KEY_ID: $(AWS_ACCESS_KEY_ID)
-    AWS_SECRET_ACCESS_KEY: $(AWS_SECRET_ACCESS_KEY)
-    AWS_SESSION_TOKEN: $(AWS_SESSION_TOKEN)
-    AWS_DEFAULT_REGION: $(AWS_REGION)
+      - bash: |
+          set -euo pipefail
 
-- script: |
-    set -euo pipefail
+          CURRENT_TASK_DEF_ARN="$(aws ecs describe-services \
+            --cluster "$ECS_CLUSTER" \
+            --services "$ECS_SERVICE" \
+            --query 'services[0].taskDefinition' \
+            --output text)"
 
-    CURRENT_TASK_DEF_ARN="$(aws ecs describe-services \
-      --cluster "$ECS_CLUSTER" \
-      --services "$ECS_SERVICE" \
-      --query 'services[0].taskDefinition' \
-      --output text)"
+          if [ -z "$CURRENT_TASK_DEF_ARN" ] || [ "$CURRENT_TASK_DEF_ARN" = "None" ]; then
+            echo "Could not resolve a task definition from ECS service '$ECS_SERVICE' in cluster '$ECS_CLUSTER'." >&2
+            exit 1
+          fi
 
-    if [ -z "$CURRENT_TASK_DEF_ARN" ] || [ "$CURRENT_TASK_DEF_ARN" = "None" ]; then
-      echo "Could not resolve a task definition from ECS service '$ECS_SERVICE' in cluster '$ECS_CLUSTER'." >&2
-      exit 1
-    fi
+          ECR_REGISTRY="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+          ECR_IMAGE="${ECR_REGISTRY}/${ECR_REPO}:${IMAGE_TAG}"
 
-    ECR_REGISTRY="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
-    ECR_IMAGE="${ECR_REGISTRY}/${ECR_REPO}:${IMAGE_TAG}"
+          aws ecs describe-task-definition \
+            --task-definition "$CURRENT_TASK_DEF_ARN" \
+            --query 'taskDefinition' \
+            > task-definition.json
 
-    aws ecs describe-task-definition \
-      --task-definition "$CURRENT_TASK_DEF_ARN" \
-      --query 'taskDefinition' \
-      > task-definition.json
+          ECR_IMAGE="$ECR_IMAGE" ECS_CONTAINER_NAME="$ECS_CONTAINER_NAME" python3 - <<'PY'
+          import json
+          import os
 
-    ECR_IMAGE="$ECR_IMAGE" ECS_CONTAINER_NAME="$ECS_CONTAINER_NAME" python3 - <<'PY'
-import json
-import os
+          with open("task-definition.json", "r", encoding="utf-8") as f:
+              task_def = json.load(f)
 
-with open("task-definition.json", "r", encoding="utf-8") as f:
-    task_def = json.load(f)
+          for key in (
+              "taskDefinitionArn",
+              "revision",
+              "status",
+              "requiresAttributes",
+              "compatibilities",
+              "registeredAt",
+              "registeredBy",
+              "deregisteredAt",
+          ):
+              task_def.pop(key, None)
 
-for key in (
-    "taskDefinitionArn",
-    "revision",
-    "status",
-    "requiresAttributes",
-    "compatibilities",
-    "registeredAt",
-    "registeredBy",
-    "deregisteredAt",
-):
-    task_def.pop(key, None)
+          image = os.environ["ECR_IMAGE"]
+          container_name = os.environ["ECS_CONTAINER_NAME"]
 
-image = os.environ["ECR_IMAGE"]
-container_name = os.environ["ECS_CONTAINER_NAME"]
+          for container in task_def.get("containerDefinitions", []):
+              if container.get("name") == container_name:
+                  container["image"] = image
+                  break
+          else:
+              raise SystemExit(
+                  f"Container '{container_name}' was not found in the current ECS task definition."
+              )
 
-for container in task_def.get("containerDefinitions", []):
-    if container.get("name") == container_name:
-        container["image"] = image
-        break
-else:
-    raise SystemExit(
-        f"Container '{container_name}' was not found in the current ECS task definition."
-    )
+          with open("task-definition-updated.json", "w", encoding="utf-8") as f:
+              json.dump(task_def, f)
+          PY
 
-with open("task-definition-updated.json", "w", encoding="utf-8") as f:
-    json.dump(task_def, f)
-PY
+          NEW_TASK_DEF_ARN="$(aws ecs register-task-definition \
+            --cli-input-json file://task-definition-updated.json \
+            --query 'taskDefinition.taskDefinitionArn' \
+            --output text)"
 
-    NEW_TASK_DEF_ARN="$(aws ecs register-task-definition \
-      --cli-input-json file://task-definition-updated.json \
-      --query 'taskDefinition.taskDefinitionArn' \
-      --output text)"
+          aws ecs update-service \
+            --cluster "$ECS_CLUSTER" \
+            --service "$ECS_SERVICE" \
+            --task-definition "$NEW_TASK_DEF_ARN" \
+            >/dev/null
 
-    aws ecs update-service \
-      --cluster "$ECS_CLUSTER" \
-      --service "$ECS_SERVICE" \
-      --task-definition "$NEW_TASK_DEF_ARN" \
-      >/dev/null
-
-    aws ecs wait services-stable \
-      --cluster "$ECS_CLUSTER" \
-      --services "$ECS_SERVICE"
-  displayName: Deploy to Amazon ECS
-  env:
-    AWS_REGION: $(AWS_REGION)
-    AWS_ACCOUNT_ID: $(AWS_ACCOUNT_ID)
-    ECR_REPO: $(ECR_REPO)
-    ECS_CLUSTER: $(ECS_CLUSTER)
-    ECS_SERVICE: $(ECS_SERVICE)
-    ECS_CONTAINER_NAME: $(ECS_CONTAINER_NAME)
-    IMAGE_TAG: $(IMAGE_TAG)
-    AWS_ACCESS_KEY_ID: $(AWS_ACCESS_KEY_ID)
-    AWS_SECRET_ACCESS_KEY: $(AWS_SECRET_ACCESS_KEY)
-    AWS_SESSION_TOKEN: $(AWS_SESSION_TOKEN)
-    AWS_DEFAULT_REGION: $(AWS_REGION)
+          aws ecs wait services-stable \
+            --cluster "$ECS_CLUSTER" \
+            --services "$ECS_SERVICE"
+        displayName: Deploy to Amazon ECS
+        env:
+          AWS_REGION: $(AWS_REGION)
+          AWS_ACCOUNT_ID: $(AWS_ACCOUNT_ID)
+          ECR_REPO: $(ECR_REPO)
+          ECS_CLUSTER: $(ECS_CLUSTER)
+          ECS_SERVICE: $(ECS_SERVICE)
+          ECS_CONTAINER_NAME: $(ECS_CONTAINER_NAME)
+          IMAGE_TAG: $(IMAGE_TAG)
+          AWS_ACCESS_KEY_ID: $(AWS_ACCESS_KEY_ID)
+          AWS_SECRET_ACCESS_KEY: $(AWS_SECRET_ACCESS_KEY)
+          AWS_SESSION_TOKEN: $(AWS_SESSION_TOKEN)
+          AWS_DEFAULT_REGION: $(AWS_REGION)
