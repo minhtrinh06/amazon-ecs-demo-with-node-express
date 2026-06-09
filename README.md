@@ -150,6 +150,91 @@ Note: Don't forget to clean your resources to prevent any unexpected charge.
 
 See [CONTRIBUTING](CONTRIBUTING.md#security-issue-notifications) for more information.
 
+## Azure DevOps CI/CD to ECS
+
+This repository now includes an [azure-pipelines.yml](/home/minhtrinh/amazon-ecs-demo-with-node-express/azure-pipelines.yml) pipeline that:
+
+- triggers on every push to any branch
+- builds the Docker image from `sample-nodejs-app`
+- pushes the image to Amazon ECR
+- registers a new ECS task definition revision
+- updates the existing ECS service and waits for it to become stable
+
+### 1. Create the pipeline in Azure DevOps
+
+- In Azure DevOps, create a pipeline from this repository.
+- Use the existing `azure-pipelines.yml` file.
+- Make sure the pipeline runs on `ubuntu-latest`.
+
+### 2. Add pipeline variables
+
+Add these variables in Azure DevOps Pipeline settings or in a variable group:
+
+- `AWS_ACCESS_KEY_ID` as a secret
+- `AWS_SECRET_ACCESS_KEY` as a secret
+- `AWS_SESSION_TOKEN` as a secret only if you use temporary credentials
+- `AWS_ACCOUNT_ID`
+- `AWS_REGION`
+- `ECR_REPO`
+- `ECS_CLUSTER`
+- `ECS_SERVICE`
+- `ECS_CONTAINER_NAME`
+- `APP_DIR`
+
+Recommended values for the resources created in this demo:
+
+- `AWS_REGION=ap-southeast-2`
+- `ECR_REPO=sample-nodejs-app`
+- `ECS_CLUSTER=sample-nodejs-app-cluster`
+- `ECS_SERVICE=sample-nodejs-app-service`
+- `ECS_CONTAINER_NAME=sample-nodejs-app`
+- `APP_DIR=sample-nodejs-app`
+
+### 3. Minimum AWS permissions for the pipeline user
+
+The AWS identity used by Azure DevOps needs permission to:
+
+- push images to ECR
+- describe and create ECR repositories
+- describe ECS services and task definitions
+- register task definition revisions
+- update ECS services
+- pass the IAM roles already referenced by the existing ECS task definition
+
+If your ECS task definition uses `taskRoleArn` or `executionRoleArn`, the pipeline identity also needs `iam:PassRole` for those role ARNs.
+
+### 4. How deployment works
+
+On each push, the pipeline:
+
+1. builds the image from `sample-nodejs-app`
+2. tags it with the Azure DevOps commit SHA
+3. pushes both `<commit-sha>` and `latest` tags to ECR
+4. reads the current task definition used by `sample-nodejs-app-service`
+5. replaces the image for the `sample-nodejs-app` container
+6. registers a new task definition revision
+7. updates the ECS service to that new revision
+
+### 5. Important note about branch pushes
+
+The current pipeline deploys on **every branch push**, because the trigger is set to `*`.
+
+If you want deployments only from `main`, change:
+
+```yaml
+trigger:
+  branches:
+    include:
+    - "*"
+```
+
+to:
+
+```yaml
+trigger:
+  - main
+```
+
 ## License
 
 This library is licensed under the MIT-0 License. See the LICENSE file.
