@@ -68,7 +68,6 @@ jobs:
           APP_DIR: $(APP_DIR)
           AWS_ACCESS_KEY_ID: $(AWS_ACCESS_KEY_ID)
           AWS_SECRET_ACCESS_KEY: $(AWS_SECRET_ACCESS_KEY)
-          AWS_SESSION_TOKEN: $(AWS_SESSION_TOKEN)
 
       - bash: |
           set -euo pipefail
@@ -184,5 +183,4 @@ jobs:
           IMAGE_TAG: $(IMAGE_TAG)
           AWS_ACCESS_KEY_ID: $(AWS_ACCESS_KEY_ID)
           AWS_SECRET_ACCESS_KEY: $(AWS_SECRET_ACCESS_KEY)
-          AWS_SESSION_TOKEN: $(AWS_SESSION_TOKEN)
           AWS_DEFAULT_REGION: $(AWS_REGION)
