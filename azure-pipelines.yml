@@ -132,6 +132,40 @@ jobs:
       - bash: |
           set -euo pipefail
 
+          print_ecs_diagnostics() {
+            echo "ECS service deployments:"
+            aws ecs describe-services \
+              --cluster "$ECS_CLUSTER" \
+              --services "$ECS_SERVICE" \
+              --query 'services[0].deployments[].{id:id,status:status,rolloutState:rolloutState,rolloutStateReason:rolloutStateReason,desiredCount:desiredCount,pendingCount:pendingCount,runningCount:runningCount,failedTasks:failedTasks,taskDefinition:taskDefinition}' \
+              --output table || true
+
+            echo "Recent ECS service events:"
+            aws ecs describe-services \
+              --cluster "$ECS_CLUSTER" \
+              --services "$ECS_SERVICE" \
+              --query 'services[0].events[0:10].[createdAt,message]' \
+              --output table || true
+
+            stopped_task_arns="$(aws ecs list-tasks \
+              --cluster "$ECS_CLUSTER" \
+              --service-name "$ECS_SERVICE" \
+              --desired-status STOPPED \
+              --query 'taskArns[0:10]' \
+              --output text || true)"
+
+            if [ -n "$stopped_task_arns" ] && [ "$stopped_task_arns" != "None" ]; then
+              echo "Recently stopped ECS tasks:"
+              aws ecs describe-tasks \
+                --cluster "$ECS_CLUSTER" \
+                --tasks $stopped_task_arns \
+                --query 'tasks[].{taskArn:taskArn,lastStatus:lastStatus,desiredStatus:desiredStatus,stopCode:stopCode,stoppedReason:stoppedReason,containers:containers[].{name:name,lastStatus:lastStatus,exitCode:exitCode,reason:reason,image:image}}' \
+                --output json || true
+            else
+              echo "No recently stopped ECS tasks found for service '$ECS_SERVICE'."
+            fi
+          }
+
           CURRENT_TASK_DEF_ARN="$(aws ecs describe-services \
             --cluster "$ECS_CLUSTER" \
             --services "$ECS_SERVICE" \
@@ -160,6 +194,8 @@ jobs:
           with open("task-definition.json", "r", encoding="utf-8") as f:
               task_def = json.load(f)
 
+          task_definition_arn = task_def.get("taskDefinitionArn", "unknown-task-definition")
+
           for key in (
               "taskDefinitionArn",
               "revision",
@@ -174,7 +210,6 @@ jobs:
 
           image = os.environ["ECR_IMAGE"]
           container_name = os.environ["ECS_CONTAINER_NAME"]
-          task_definition_arn = task_def.get("taskDefinitionArn", "unknown-task-definition")
           containers = task_def.get("containerDefinitions", [])
           container_names = [container.get("name", "<unnamed>") for container in containers]
 
@@ -215,9 +250,17 @@ jobs:
             --task-definition "$NEW_TASK_DEF_ARN" \
             >/dev/null
 
-          aws ecs wait services-stable \
+          echo "Updated ECS service '$ECS_SERVICE' to task definition '$NEW_TASK_DEF_ARN'. Waiting for service stability..."
+
+          if ! aws ecs wait services-stable \
             --cluster "$ECS_CLUSTER" \
-            --services "$ECS_SERVICE"
+            --services "$ECS_SERVICE"; then
+            echo "ECS service '$ECS_SERVICE' did not become stable. Collecting rollout diagnostics..." >&2
+            print_ecs_diagnostics
+            exit 1
+          fi
+
+          echo "ECS service '$ECS_SERVICE' is stable."
         displayName: Deploy to Amazon ECS
         env:
           AWS_REGION: $(AWS_REGION)
