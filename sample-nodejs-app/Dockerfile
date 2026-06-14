@@ -1,4 +1,4 @@
-FROM public.ecr.aws/bitnami/node:16.18.1
+FROM node:16.20.2
 RUN mkdir -p /usr/src/calc
 WORKDIR /usr/src/calc
 COPY . .
